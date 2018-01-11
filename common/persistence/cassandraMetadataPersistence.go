@@ -21,6 +21,7 @@
 package persistence
 
 import (
+	"github.com/gogo/protobuf/test/indeximport-issue72/index"
 	"fmt"
 
 	"github.com/gocql/gocql"
@@ -37,7 +38,7 @@ const (
 		`name: ?, ` +
 		`status: ?, ` +
 		`description: ?, ` +
-		`owner_email: ?` +
+		`owner_email: ? ` +
 		`}`
 
 	templateDomainConfigType = `{` +
@@ -45,32 +46,42 @@ const (
 		`emit_metric: ?` +
 		`}`
 
+	templateDomainReplicationConfigType = `{` +
+		`active_cluster_name: ?, ` +
+		`failover_version: ?, ` +
+		`clusters: ? `
+		`}`
+
 	templateCreateDomainQuery = `INSERT INTO domains (` +
-		`id, domain, config) ` +
-		`VALUES(?, ` + templateDomainType + `, ` + templateDomainConfigType + `)`
+		`id, domain, config, replication_config) ` +
+		`VALUES(?, ` + templateDomainType + `, ` + templateDomainConfigType + `, ` + templateDomainReplicationConfigType + `)`
 
 	templateCreateDomainByNameQuery = `INSERT INTO domains_by_name (` +
-		`name, domain, config) ` +
-		`VALUES(?, ` + templateDomainType + `, ` + templateDomainConfigType + `) IF NOT EXISTS`
+		`name, domain, config, replication_config) ` +
+		`VALUES(?, ` + templateDomainType + `, ` + templateDomainConfigType + `, ` + templateDomainReplicationConfigType + `) IF NOT EXISTS`
 
-	templateGetDomainQuery = `SELECT domain.id, domain.name, domain.status, domain.description, domain.owner_email, ` +
-		`config.retention, config.emit_metric ` +
+	templateGetDomainQuery = `SELECT domain.id, domain.name, domain.status, domain.description, ` +
+		`domain.owner_email, config.retention, config.emit_metric ` +
+		`replication_config.active_cluster_name, replication_config.failover_version, replication_config.clusters ` +
 		`FROM domains ` +
 		`WHERE id = ?`
 
 	templateGetDomainByNameQuery = `SELECT domain.id, domain.name, domain.status, domain.description, ` +
 		`domain.owner_email, config.retention, config.emit_metric ` +
+		`replication_config.active_cluster_name, replication_config.failover_version, replication_config.clusters ` +
 		`FROM domains_by_name ` +
 		`WHERE name = ?`
 
 	templateUpdateDomainQuery = `UPDATE domains ` +
 		`SET domain = ` + templateDomainType + `, ` +
 		`config = ` + templateDomainConfigType + ` ` +
+		`replication_config = ` + templateDomainReplicationConfigType + ` ` +
 		`WHERE id = ?`
 
 	templateUpdateDomainByNameQuery = `UPDATE domains_by_name ` +
 		`SET domain = ` + templateDomainType + `, ` +
 		`config = ` + templateDomainConfigType + ` ` +
+		`replication_config = ` + templateDomainReplicationConfigType + ` ` +
 		`WHERE name = ?`
 
 	templateDeleteDomainQuery = `DELETE FROM domains ` +
@@ -117,6 +128,11 @@ func (m *cassandraMetadataPersistence) Close() {
 // delete the orphaned entry from domains table.  There is a chance delete entry could fail and we never delete the
 // orphaned entry from domains table.  We might need a background job to delete those orphaned record.
 func (m *cassandraMetadataPersistence) CreateDomain(request *CreateDomainRequest) (*CreateDomainResponse, error) {
+	clusterReplicationConfigs := []map[string]interface{}{}
+	for index := range request.ReplicationConfig.Clusters {
+		clusterReplicationConfigs = append(clusterReplicationConfigs, request.ReplicationConfig.Clusters[index].serialize())
+	}
+
 	domainUUID := uuid.New()
 	if err := m.session.Query(templateCreateDomainQuery,
 		domainUUID,
@@ -126,7 +142,11 @@ func (m *cassandraMetadataPersistence) CreateDomain(request *CreateDomainRequest
 		request.Description,
 		request.OwnerEmail,
 		request.Retention,
-		request.EmitMetric).Exec(); err != nil {
+		request.EmitMetric,
+		request.ReplicationConfig.ActiveClusterName,
+		request.ReplicationConfig.FailoverVersion,
+		clusterReplicationConfigs,
+		).Exec(); err != nil {
 		return nil, &workflow.InternalServiceError{
 			Message: fmt.Sprintf("CreateDomain operation failed. Inserting into domains table. Error: %v", err),
 		}
@@ -140,7 +160,11 @@ func (m *cassandraMetadataPersistence) CreateDomain(request *CreateDomainRequest
 		request.Description,
 		request.OwnerEmail,
 		request.Retention,
-		request.EmitMetric)
+		request.EmitMetric,
+		request.ReplicationConfig.ActiveClusterName,
+		request.ReplicationConfig.FailoverVersion,
+		clusterReplicationConfigs,
+	)
 
 	previous := make(map[string]interface{})
 	applied, err := query.MapScanCAS(previous)
@@ -176,6 +200,8 @@ func (m *cassandraMetadataPersistence) GetDomain(request *GetDomainRequest) (*Ge
 	var err error
 	info := &DomainInfo{}
 	config := &DomainConfig{}
+	replicationConfig := &DomainReplicationConfig{}
+	replicationClusters := []map[string]interface{}{}
 	if len(request.ID) > 0 {
 		if len(request.Name) > 0 {
 			return nil, &workflow.BadRequestError{
@@ -192,7 +218,11 @@ func (m *cassandraMetadataPersistence) GetDomain(request *GetDomainRequest) (*Ge
 			&info.Description,
 			&info.OwnerEmail,
 			&config.Retention,
-			&config.EmitMetric)
+			&config.EmitMetric,
+			&replicationConfig.ActiveClusterName,
+			&replicationConfig.FailoverVersion,
+			replicationClusters,
+		)
 	} else if len(request.Name) > 0 {
 		query = m.session.Query(templateGetDomainByNameQuery,
 			request.Name)
@@ -203,7 +233,11 @@ func (m *cassandraMetadataPersistence) GetDomain(request *GetDomainRequest) (*Ge
 			&info.Description,
 			&info.OwnerEmail,
 			&config.Retention,
-			&config.EmitMetric)
+			&config.EmitMetric,
+			&replicationConfig.ActiveClusterName,
+			&replicationConfig.FailoverVersion,
+			replicationClusters,
+		)
 	} else {
 		return nil, &workflow.BadRequestError{
 			Message: "GetDomain operation failed.  Both ID and Name are empty.",
@@ -229,6 +263,11 @@ func (m *cassandraMetadataPersistence) GetDomain(request *GetDomainRequest) (*Ge
 		}
 	}
 
+	for index := range	replicationClusters{
+		clusterReplicationConfig := &ClusterReplicationConfig{}.deserialize(replicationClusters[index])
+		replicationConfig.Clusters = append(replicationConfig.Clusters, clusterReplicationConfig)
+	}
+
 	return &GetDomainResponse{
 		Info:   info,
 		Config: config,
@@ -236,6 +275,11 @@ func (m *cassandraMetadataPersistence) GetDomain(request *GetDomainRequest) (*Ge
 }
 
 func (m *cassandraMetadataPersistence) UpdateDomain(request *UpdateDomainRequest) error {
+	clusterReplicationConfigs := []map[string]interface{}{}
+	for index := range request.ReplicationConfig.Clusters {
+		clusterReplicationConfigs = append(clusterReplicationConfigs, request.ReplicationConfig.Clusters[index].serialize())
+	}
+
 	batch := m.session.NewBatch(gocql.LoggedBatch)
 
 	batch.Query(templateUpdateDomainQuery,
@@ -246,7 +290,11 @@ func (m *cassandraMetadataPersistence) UpdateDomain(request *UpdateDomainRequest
 		request.Info.OwnerEmail,
 		request.Config.Retention,
 		request.Config.EmitMetric,
-		request.Info.ID)
+		request.Info.ID,
+		request.ReplicationConfig.ActiveClusterName,
+		request.ReplicationConfig.FailoverVersion,
+		clusterReplicationConfigs,
+	)
 
 	batch.Query(templateUpdateDomainByNameQuery,
 		request.Info.ID,
@@ -256,7 +304,11 @@ func (m *cassandraMetadataPersistence) UpdateDomain(request *UpdateDomainRequest
 		request.Info.OwnerEmail,
 		request.Config.Retention,
 		request.Config.EmitMetric,
-		request.Info.Name)
+		request.Info.Name,
+		request.ReplicationConfig.ActiveClusterName,
+		request.ReplicationConfig.FailoverVersion,
+		clusterReplicationConfigs,
+	)
 
 	if err := m.session.ExecuteBatch(batch); err != nil {
 		return &workflow.InternalServiceError{

@@ -72,6 +72,18 @@ func (m *metadataPersistenceSuite) TestCreateDomain() {
 	retention := int32(10)
 	emitMetric := true
 
+	clusterActive := "some random active cluster name"
+	clusterStandby := "some random standby cluster name"
+	failoverVersion := int64(59)
+	clusters := []*DomainReplicationConfig{
+		&ClusterReplicationConfig{
+			ClusterName: clusterActive,
+		},
+		&ClusterReplicationConfig{
+			ClusterName: clusterStandby,
+		},
+	}
+
 	resp0, err0 := m.CreateDomain(
 		&DomainInfo{
 			Name:        name,
@@ -82,7 +94,14 @@ func (m *metadataPersistenceSuite) TestCreateDomain() {
 		&DomainConfig{
 			Retention:  retention,
 			EmitMetric: emitMetric,
-		})
+		},
+		&DomainReplicationConfig{
+			ActiveClusterName: clusterActive,
+			FailoverVersion:   failoverVersion,
+			Clusters:          clusters,
+		},
+	)
+
 	m.Nil(err0)
 	m.NotNil(resp0)
 
@@ -113,6 +132,18 @@ func (m *metadataPersistenceSuite) TestGetDomain() {
 	retention := int32(10)
 	emitMetric := true
 
+	clusterActive := "some random active cluster name"
+	clusterStandby := "some random standby cluster name"
+	failoverVersion := int64(59)
+	clusters := []*DomainReplicationConfig{
+		&ClusterReplicationConfig{
+			ClusterName: clusterActive,
+		},
+		&ClusterReplicationConfig{
+			ClusterName: clusterStandby,
+		},
+	}
+
 	resp0, err0 := m.GetDomain("", "does-not-exist")
 	m.Nil(resp0)
 	m.NotNil(err0)
@@ -128,7 +159,13 @@ func (m *metadataPersistenceSuite) TestGetDomain() {
 		&DomainConfig{
 			Retention:  retention,
 			EmitMetric: emitMetric,
-		})
+		},
+		&DomainReplicationConfig{
+			ActiveClusterName: clusterActive,
+			FailoverVersion:   failoverVersion,
+			Clusters:          clusters,
+		},
+	)
 	m.Nil(err1)
 	m.NotNil(resp1)
 
@@ -145,6 +182,12 @@ func (m *metadataPersistenceSuite) TestGetDomain() {
 	m.Equal(owner, resp2.Info.OwnerEmail)
 	m.Equal(retention, resp2.Config.Retention)
 	m.Equal(emitMetric, resp2.Config.EmitMetric)
+	m.Equal(clusterActive, resp2.ReplicationConfig.ActiveClusterName)
+	m.Equal(failoverVersion, resp2.ReplicationConfig.FailoverVersion)
+	m.Equal(len(clusters), len(resp2.ReplicationConfig.Clusters))
+	for index := range clusters {
+		m.Equal(clusters[index], resp2.ReplicationConfig.Clusters[index])
+	}
 
 	resp3, err3 := m.GetDomain("", name)
 	m.Nil(err3)
@@ -156,6 +199,12 @@ func (m *metadataPersistenceSuite) TestGetDomain() {
 	m.Equal(owner, resp3.Info.OwnerEmail)
 	m.Equal(retention, resp3.Config.Retention)
 	m.Equal(emitMetric, resp3.Config.EmitMetric)
+	m.Equal(clusterActive, resp2.ReplicationConfig.ActiveClusterName)
+	m.Equal(failoverVersion, resp2.ReplicationConfig.FailoverVersion)
+	m.Equal(len(clusters), len(resp2.ReplicationConfig.Clusters))
+	for index := range clusters {
+		m.Equal(clusters[index], resp2.ReplicationConfig.Clusters[index])
+	}
 
 	resp4, err4 := m.GetDomain(id, name)
 	m.NotNil(err4)
@@ -171,6 +220,18 @@ func (m *metadataPersistenceSuite) TestUpdateDomain() {
 	retention := int32(10)
 	emitMetric := true
 
+	clusterActive := "some random active cluster name"
+	clusterStandby := "some random standby cluster name"
+	failoverVersion := int64(59)
+	clusters := []*DomainReplicationConfig{
+		&ClusterReplicationConfig{
+			ClusterName: clusterActive,
+		},
+		&ClusterReplicationConfig{
+			ClusterName: clusterStandby,
+		},
+	}
+
 	resp1, err1 := m.CreateDomain(
 		&DomainInfo{
 			Name:        name,
@@ -181,7 +242,13 @@ func (m *metadataPersistenceSuite) TestUpdateDomain() {
 		&DomainConfig{
 			Retention:  retention,
 			EmitMetric: emitMetric,
-		})
+		},
+		&DomainReplicationConfig{
+			ActiveClusterName: clusterActive,
+			FailoverVersion:   failoverVersion,
+			Clusters:          clusters,
+		},
+	)
 	m.Nil(err1)
 
 	id := resp1.ID
@@ -282,14 +349,15 @@ func (m *metadataPersistenceSuite) TestDeleteDomain() {
 	m.Nil(resp7)
 }
 
-func (m *metadataPersistenceSuite) CreateDomain(info *DomainInfo, config *DomainConfig) (*CreateDomainResponse, error) {
+func (m *metadataPersistenceSuite) CreateDomain(info *DomainInfo, config *DomainConfig, replicationConfig *DomainReplicationConfig) (*CreateDomainResponse, error) {
 	return m.MetadataManager.CreateDomain(&CreateDomainRequest{
-		Name:        info.Name,
-		Status:      info.Status,
-		Description: info.Description,
-		OwnerEmail:  info.OwnerEmail,
-		Retention:   config.Retention,
-		EmitMetric:  config.EmitMetric,
+		Name:              info.Name,
+		Status:            info.Status,
+		Description:       info.Description,
+		OwnerEmail:        info.OwnerEmail,
+		Retention:         config.Retention,
+		EmitMetric:        config.EmitMetric,
+		ReplicationConfig: replicationConfig,
 	})
 }
 
@@ -300,10 +368,11 @@ func (m *metadataPersistenceSuite) GetDomain(id, name string) (*GetDomainRespons
 	})
 }
 
-func (m *metadataPersistenceSuite) UpdateDomain(info *DomainInfo, config *DomainConfig) error {
+func (m *metadataPersistenceSuite) UpdateDomain(info *DomainInfo, config *DomainConfig, replicationConfig *DomainReplicationConfig) error {
 	return m.MetadataManager.UpdateDomain(&UpdateDomainRequest{
-		Info:   info,
-		Config: config,
+		Info:              info,
+		Config:            config,
+		ReplicationConfig: replicationConfig,
 	})
 }
 
