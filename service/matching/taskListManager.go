@@ -126,16 +126,15 @@ func (rl *rateLimiter) Reserve() *rate.Reservation {
 }
 
 func newTaskListManager(
-	e *matchingEngineImpl, taskList *taskListID, config *Config,
+	e *matchingEngineImpl, taskList *taskListID, taskListKind *s.TaskListKind, config *Config,
 ) taskListManager {
 	dPtr := _defaultTaskDispatchRPS
 	rl := newRateLimiter(&dPtr, _defaultTaskDispatchRPSTTL)
-	return newTaskListManagerWithRateLimiter(e, taskList, config, rl)
+	return newTaskListManagerWithRateLimiter(e, taskList, taskListKind, config, rl)
 }
 
-// This is for use in tests
 func newTaskListManagerWithRateLimiter(
-	e *matchingEngineImpl, taskList *taskListID, config *Config, rl rateLimiter,
+	e *matchingEngineImpl, taskList *taskListID, taskListKind *s.TaskListKind, config *Config, rl rateLimiter,
 ) taskListManager {
 	// To perform one db operation if there are no pollers
 	taskBufferSize := config.GetTasksBatchSize - 1
@@ -159,6 +158,7 @@ func newTaskListManagerWithRateLimiter(
 		config:              config,
 		outstandingPollsMap: make(map[string]context.CancelFunc),
 		rateLimiter:         rl,
+		taskListKind:        taskListKind,
 	}
 	tlMgr.taskWriter = newTaskWriter(tlMgr)
 	tlMgr.startWG.Add(1)
@@ -228,6 +228,8 @@ type taskListManagerImpl struct {
 	outstandingPollsMap  map[string]context.CancelFunc
 	// Rate limiter for task dispatch
 	rateLimiter rateLimiter
+
+	taskListKind *s.TaskListKind // TaskListKindWorker is sticky taskList that needs different process in persistence
 }
 
 // getTaskResult contains task info and optional channel to notify createTask caller
@@ -362,6 +364,7 @@ func (c *taskListManagerImpl) persistAckLevel() error {
 			TaskType: c.taskListID.taskType,
 			AckLevel: c.taskAckManager.getAckLevel(),
 			RangeID:  c.rangeID,
+			Kind:     c.getTaskListKind(),
 		},
 	}
 	c.Unlock()
@@ -396,6 +399,15 @@ func (c *taskListManagerImpl) getAckLevel() (ackLevel int64) {
 	c.Lock()
 	defer c.Unlock()
 	return c.taskAckManager.getAckLevel()
+}
+
+func (c *taskListManagerImpl) getTaskListKind() int {
+	// there is no need to lock here,
+	// since c.taskListKind is assigned when taskListManager been created and never changed.
+	if c.taskListKind == nil {
+		c.taskListKind = common.TaskListKindPtr(s.TaskListKindNormal)
+	}
+	return int(*c.taskListKind)
 }
 
 // completeTaskPoll should be called after task poll is done even if append has failed.
@@ -521,9 +533,10 @@ func (c *taskListManagerImpl) updateRangeIfNeededLocked(e *matchingEngineImpl) e
 	var resp *persistence.LeaseTaskListResponse
 	op := func() (err error) {
 		resp, err = e.taskManager.LeaseTaskList(&persistence.LeaseTaskListRequest{
-			DomainID: c.taskListID.domainID,
-			TaskList: c.taskListID.taskListName,
-			TaskType: c.taskListID.taskType,
+			DomainID:     c.taskListID.domainID,
+			TaskList:     c.taskListID.taskListName,
+			TaskType:     c.taskListID.taskType,
+			TaskListKind: c.getTaskListKind(),
 		})
 		return
 	}

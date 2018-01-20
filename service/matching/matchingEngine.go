@@ -155,7 +155,8 @@ func (e *matchingEngineImpl) String() string {
 
 // Returns taskListManager for a task list. If not already cached gets new range from DB and
 // if successful creates one.
-func (e *matchingEngineImpl) getTaskListManager(taskList *taskListID) (taskListManager, error) {
+func (e *matchingEngineImpl) getTaskListManager(taskList *taskListID,
+	taskListKind *workflow.TaskListKind) (taskListManager, error) {
 	// The first check is an optimization so almost all requests will have a task list manager
 	// and return avoiding the write lock
 	e.taskListsLock.RLock()
@@ -170,7 +171,7 @@ func (e *matchingEngineImpl) getTaskListManager(taskList *taskListID) (taskListM
 		e.taskListsLock.Unlock()
 		return result, nil
 	}
-	mgr := newTaskListManager(e, taskList, e.config)
+	mgr := newTaskListManager(e, taskList, taskListKind, e.config)
 	e.taskLists[*taskList] = mgr
 	e.taskListsLock.Unlock()
 	logging.LogTaskListLoadingEvent(e.logger, taskList.taskListName, taskList.taskType)
@@ -199,12 +200,13 @@ func (e *matchingEngineImpl) removeTaskListManager(id *taskListID) {
 // AddDecisionTask either delivers task directly to waiting poller or save it into task list persistence.
 func (e *matchingEngineImpl) AddDecisionTask(addRequest *m.AddDecisionTaskRequest) error {
 	domainID := addRequest.GetDomainUUID()
-	taskListName := *addRequest.TaskList.Name
+	taskListName := addRequest.TaskList.GetName()
+	taskListKind := common.TaskListKindPtr(addRequest.TaskList.GetKind())
 	e.logger.Debugf("Received AddDecisionTask for taskList=%v, WorkflowID=%v, RunID=%v, ScheduleToStartTimeout=%v",
 		addRequest.TaskList.GetName(), addRequest.Execution.GetWorkflowId(), addRequest.Execution.GetRunId(),
 		addRequest.GetScheduleToStartTimeoutSeconds())
 	taskList := newTaskListID(domainID, taskListName, persistence.TaskListTypeDecision)
-	tlMgr, err := e.getTaskListManager(taskList)
+	tlMgr, err := e.getTaskListManager(taskList, taskListKind)
 	if err != nil {
 		return err
 	}
@@ -222,11 +224,12 @@ func (e *matchingEngineImpl) AddDecisionTask(addRequest *m.AddDecisionTaskReques
 func (e *matchingEngineImpl) AddActivityTask(addRequest *m.AddActivityTaskRequest) error {
 	domainID := addRequest.GetDomainUUID()
 	sourceDomainID := addRequest.GetSourceDomainUUID()
-	taskListName := *addRequest.TaskList.Name
+	taskListName := addRequest.TaskList.GetName()
+	taskListKind := common.TaskListKindPtr(addRequest.TaskList.GetKind())
 	e.logger.Debugf("Received AddActivityTask for taskList=%v WorkflowID=%v, RunID=%v",
 		taskListName, addRequest.Execution.WorkflowId, addRequest.Execution.RunId)
 	taskList := newTaskListID(domainID, taskListName, persistence.TaskListTypeActivity)
-	tlMgr, err := e.getTaskListManager(taskList)
+	tlMgr, err := e.getTaskListManager(taskList, taskListKind)
 	if err != nil {
 		return err
 	}
@@ -258,7 +261,8 @@ pollLoop:
 		// long-poll when frontend calls CancelOutstandingPoll API
 		pollerCtx := context.WithValue(ctx, pollerIDKey, pollerID)
 		taskList := newTaskListID(domainID, taskListName, persistence.TaskListTypeDecision)
-		tCtx, err := e.getTask(pollerCtx, taskList, nil)
+		taskListKind := common.TaskListKindPtr(request.TaskList.GetKind())
+		tCtx, err := e.getTask(pollerCtx, taskList, nil, taskListKind)
 		if err != nil {
 			// TODO: Is empty poll the best reply for errPumpClosed?
 			if err == ErrNoTasks || err == errPumpClosed {
@@ -359,7 +363,8 @@ pollLoop:
 		// Add frontend generated pollerID to context so tasklistMgr can support cancellation of
 		// long-poll when frontend calls CancelOutstandingPoll API
 		pollerCtx := context.WithValue(ctx, pollerIDKey, pollerID)
-		tCtx, err := e.getTask(pollerCtx, taskList, maxDispatch)
+		taskListKind := common.TaskListKindPtr(request.TaskList.GetKind())
+		tCtx, err := e.getTask(pollerCtx, taskList, maxDispatch, taskListKind)
 		if err != nil {
 			// TODO: Is empty poll the best reply for errPumpClosed?
 			if err == ErrNoTasks || err == errPumpClosed {
@@ -398,9 +403,10 @@ pollLoop:
 // to be processed by worker, and then return the query result.
 func (e *matchingEngineImpl) QueryWorkflow(ctx context.Context, queryRequest *m.QueryWorkflowRequest) (*workflow.QueryWorkflowResponse, error) {
 	domainID := queryRequest.GetDomainUUID()
-	taskListName := *queryRequest.TaskList.Name
+	taskListName := queryRequest.TaskList.GetName()
 	taskList := newTaskListID(domainID, taskListName, persistence.TaskListTypeDecision)
-	tlMgr, err := e.getTaskListManager(taskList)
+	taskListKind := common.TaskListKindPtr(queryRequest.TaskList.GetKind())
+	tlMgr, err := e.getTaskListManager(taskList, taskListKind)
 	if err != nil {
 		return nil, err
 	}
@@ -455,7 +461,8 @@ func (e *matchingEngineImpl) CancelOutstandingPoll(ctx context.Context, request 
 	pollerID := request.GetPollerID()
 
 	taskList := newTaskListID(domainID, taskListName, taskListType)
-	tlMgr, err := e.getTaskListManager(taskList)
+	taskListKind := common.TaskListKindPtr(request.TaskList.GetKind())
+	tlMgr, err := e.getTaskListManager(taskList, taskListKind)
 	if err != nil {
 		return err
 	}
@@ -466,9 +473,9 @@ func (e *matchingEngineImpl) CancelOutstandingPoll(ctx context.Context, request 
 
 // Loads a task from persistence and wraps it in a task context
 func (e *matchingEngineImpl) getTask(
-	ctx context.Context, taskList *taskListID, maxDispatchPerSecond *float64,
+	ctx context.Context, taskList *taskListID, maxDispatchPerSecond *float64, taskListKind *workflow.TaskListKind,
 ) (*taskContext, error) {
-	tlMgr, err := e.getTaskListManager(taskList)
+	tlMgr, err := e.getTaskListManager(taskList, taskListKind)
 	if err != nil {
 		return nil, err
 	}

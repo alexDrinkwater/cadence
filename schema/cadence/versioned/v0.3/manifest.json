@@ -1,9 +1,10 @@
 {
   "CurrVersion": "0.3",
   "MinCompatibleVersion": "0.3",
-  "Description": "add client_library_version, client_feature_version and client_impl to mutable state",
+  "Description": "add client_library_version, client_feature_version and client_impl to mutable state; add kind to task_list",
   "SchemaUpdateCqlFiles": [
     "add_client_version.cql",
-    "add_last_first_event_id.cql"
+    "add_last_first_event_id.cql",
+    "add_tasklist_kind.cql"
   ]
 }

@@ -388,6 +388,7 @@ func (t *transferQueueProcessorImpl) processDecisionTask(task *persistence.Trans
 	startTimestamp := mb.executionInfo.StartTimestamp
 	if mb.isStickyTaskListEnabled() {
 		taskList.Name = common.StringPtr(mb.executionInfo.StickyTaskList)
+		taskList.Kind = common.TaskListKindPtr(workflow.TaskListKindWorker)
 		timeout = mb.executionInfo.StickyScheduleToStartTimeout
 	}
 	release()
